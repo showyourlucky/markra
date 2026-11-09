@@ -141,13 +141,45 @@ export function scrollCodeMirrorSearchMatchIntoView(
   if (!validScrollMatch(match, view.state.doc.length)) return false;
 
   // The visual surface scrolls through an outer container while the editor's
-  // own scroller is overflow-visible, so a scroll effect on its own never
-  // moves the page. Setting the selection in the same transaction makes
-  // CodeMirror reveal the match, mirroring how the source editor and outline
-  // navigation jump to a position.
+  // own scroller is overflow-visible, so CodeMirror cannot move the page on
+  // its own: its reveal handling only reaches lines that are already
+  // rendered, which is why jumping works in short documents but not long
+  // ones. Set the selection like the source editor does, then scroll the
+  // outer container directly from the height map, which knows every line
+  // position rendered or not.
   view.dispatch({
     effects: EditorView.scrollIntoView(match.from, { y: "center" }),
     selection: EditorSelection.range(match.from, match.to),
   });
+  scrollVisualSurfaceToMatch(view, match);
   return true;
+}
+
+function scrollVisualSurfaceToMatch(view: EditorView, match: SearchRange) {
+  const scrollContainer = view.dom.closest<HTMLElement>(".paper-scroll");
+  if (!scrollContainer) return;
+
+  const lineBlock = view.lineBlockAt(match.from);
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const contentTop =
+    view.contentDOM.getBoundingClientRect().top -
+    containerRect.top +
+    scrollContainer.scrollTop;
+  const targetTop =
+    contentTop +
+    lineBlock.top +
+    lineBlock.height / 2 -
+    scrollContainer.clientHeight / 2;
+  scrollContainer.scrollTop = Math.max(0, targetTop);
+
+  // Height-map positions are estimates around unmeasured block widgets.
+  // Once the scrolled-to region is rendered, snap to the actual match mark,
+  // the same belt-and-braces step the AI preview scroll takes.
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => {
+      view.dom
+        .querySelector<HTMLElement>(".cm-markra-search-match-current")
+        ?.scrollIntoView?.({ block: "center", inline: "nearest" });
+    });
+  }
 }
