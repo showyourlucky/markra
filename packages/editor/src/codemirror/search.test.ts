@@ -87,4 +87,20 @@ describe("CodeMirror search decorations", () => {
       false,
     );
   });
+
+  it("moves the selection to the revealed match", () => {
+    const view = createView();
+
+    expect(scrollCodeMirrorSearchMatchIntoView(view, { from: 11, to: 16 })).toBe(
+      true,
+    );
+    expect(view.state.selection.main.from).toBe(11);
+    expect(view.state.selection.main.to).toBe(16);
+
+    expect(scrollCodeMirrorSearchMatchIntoView(view, { from: 20, to: 30 })).toBe(
+      false,
+    );
+    expect(view.state.selection.main.from).toBe(11);
+    expect(view.state.selection.main.to).toBe(16);
+  });
 });

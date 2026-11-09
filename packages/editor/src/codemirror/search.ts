@@ -1,4 +1,5 @@
 import {
+  EditorSelection,
   StateEffect,
   StateField,
   type EditorState,
@@ -139,8 +140,14 @@ export function scrollCodeMirrorSearchMatchIntoView(
 ) {
   if (!validScrollMatch(match, view.state.doc.length)) return false;
 
+  // The visual surface scrolls through an outer container while the editor's
+  // own scroller is overflow-visible, so a scroll effect on its own never
+  // moves the page. Setting the selection in the same transaction makes
+  // CodeMirror reveal the match, mirroring how the source editor and outline
+  // navigation jump to a position.
   view.dispatch({
     effects: EditorView.scrollIntoView(match.from, { y: "center" }),
+    selection: EditorSelection.range(match.from, match.to),
   });
   return true;
 }
