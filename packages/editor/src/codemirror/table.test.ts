@@ -2,7 +2,13 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dispatchPlainTextPaste } from "../plain-text-paste.ts";
+import { findCodeMirrorSearchMatches } from "./controller.ts";
 import { liveMarkdown, mathPreviewPlugin } from "./index.ts";
+import {
+  codeMirrorSearchPlugin,
+  scrollCodeMirrorSearchMatchIntoView,
+  updateCodeMirrorSearchDecorations,
+} from "./search.ts";
 import type { MarkraPlugin } from "./plugin.ts";
 import {
   focusVisualTableCell,
@@ -2326,5 +2332,82 @@ describe("tablePreviewPlugin", () => {
       document.querySelector<HTMLInputElement>('[aria-label="Table rows"]')
         ?.value,
     ).toBe("10");
+  });
+});
+
+describe("tablePreviewPlugin search highlights", () => {
+  function createSearchView(doc: string) {
+    const parent = document.createElement("div");
+    document.body.append(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc,
+        extensions: [
+          liveMarkdown({ plugins: [tablePreviewPlugin()] }),
+          codeMirrorSearchPlugin(),
+        ],
+        selection: EditorSelection.cursor(doc.length),
+      }),
+    });
+    view.focus();
+    views.push(view);
+    return view;
+  }
+
+  it("paints search highlights inside the table widget", () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | Needle |",
+      "| Beta | Needle |",
+      "",
+      "Outside Needle text",
+    ].join("\n");
+    const view = createSearchView(doc);
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+
+    const matches = findCodeMirrorSearchMatches(view.state, "Needle");
+    expect(matches).toHaveLength(3);
+    const tableHighlights = () =>
+      view.dom.querySelectorAll(".cm-markra-table .cm-markra-search-match");
+
+    // Active match outside the table: both in-table matches are painted
+    // as ordinary highlights and the widget stays a widget.
+    updateCodeMirrorSearchDecorations(view, matches, 2);
+    scrollCodeMirrorSearchMatchIntoView(view, matches[2]);
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+    expect(tableHighlights()).toHaveLength(2);
+    expect(
+      view.dom.querySelector(".cm-markra-table .cm-markra-search-match-current"),
+    ).toBeNull();
+
+    // Active match inside the table: the widget still stays, and the
+    // current highlight lands on the matching cell text.
+    updateCodeMirrorSearchDecorations(view, matches, 0);
+    scrollCodeMirrorSearchMatchIntoView(view, matches[0]);
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+    expect(tableHighlights()).toHaveLength(2);
+    const firstCurrent = view.dom.querySelector(
+      ".cm-markra-table .cm-markra-search-match-current",
+    );
+    expect(firstCurrent?.textContent).toBe("Needle");
+    expect(
+      firstCurrent?.closest("td")?.dataset.tableRow,
+    ).toBe("0");
+
+    // Navigating to the second in-table match moves the current highlight.
+    updateCodeMirrorSearchDecorations(view, matches, 1);
+    scrollCodeMirrorSearchMatchIntoView(view, matches[1]);
+    expect(
+      view.dom
+        .querySelector(".cm-markra-table .cm-markra-search-match-current")
+        ?.closest("td")?.dataset.tableRow,
+    ).toBe("1");
+
+    // Clearing the search removes the highlights, widget untouched.
+    updateCodeMirrorSearchDecorations(view, [], -1);
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+    expect(tableHighlights()).toHaveLength(0);
   });
 });

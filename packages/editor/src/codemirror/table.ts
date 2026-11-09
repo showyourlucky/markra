@@ -7,7 +7,7 @@ import {
   tableCellCaretOffset,
   tableCaretPlaceholder as TABLE_CARET_PLACEHOLDER,
 } from "./table-selection.ts";
-import type { EditorState } from "@codemirror/state";
+import type { EditorState, Text as CodeMirrorText } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -27,6 +27,10 @@ import {
   type LinksPluginOptions,
 } from "./links.ts";
 import { defineMarkraPlugin } from "./plugin.ts";
+import {
+  codeMirrorSearchMatchesInRange,
+  type CodeMirrorSearchMatchInRange,
+} from "./search.ts";
 import { getMarkraRenderers, markraRenderer } from "./renderers.ts";
 
 export type CodeMirrorTableAlignment = "center" | "left" | "right" | null;
@@ -1186,9 +1190,130 @@ function tablePreviewContentKey(preview: TablePreview) {
   });
 }
 
+function tableCellPlainText(cell: HTMLTableCellElement) {
+  const walker = cell.ownerDocument.createTreeWalker(
+    cell,
+    NodeFilter.SHOW_TEXT,
+  );
+  let text = "";
+  let node = walker.nextNode();
+  while (node) {
+    text += node.textContent ?? "";
+    node = walker.nextNode();
+  }
+  return text;
+}
+
+function wrapTableCellTextRange(
+  cell: HTMLTableCellElement,
+  start: number,
+  end: number,
+  className: string,
+) {
+  const walker = cell.ownerDocument.createTreeWalker(
+    cell,
+    NodeFilter.SHOW_TEXT,
+  );
+  const segments: { node: Text; start: number; end: number }[] = [];
+  let offset = 0;
+  let node = walker.nextNode();
+  while (node) {
+    const length = node.textContent?.length ?? 0;
+    const nodeStart = offset;
+    offset += length;
+    if (node instanceof Text && offset > start && nodeStart < end) {
+      segments.push({
+        node,
+        start: Math.max(start, nodeStart) - nodeStart,
+        end: Math.min(end, offset) - nodeStart,
+      });
+    }
+    node = walker.nextNode();
+  }
+  // Split from the last segment backwards so earlier node offsets stay valid.
+  for (const segment of segments.reverse()) {
+    let middle = segment.node;
+    if (segment.start > 0) middle = middle.splitText(segment.start);
+    const matchLength = segment.end - segment.start;
+    if (matchLength < (middle.textContent?.length ?? 0)) {
+      middle.splitText(matchLength);
+    }
+    const span = cell.ownerDocument.createElement("span");
+    span.className = className;
+    middle.parentNode?.insertBefore(span, middle);
+    span.append(middle);
+  }
+}
+
+function highlightTableCellSearchMatches(
+  cell: HTMLTableCellElement,
+  matches: readonly CodeMirrorSearchMatchInRange[],
+  doc: CodeMirrorText,
+) {
+  // The rendered cell text drops markdown markers, so source offsets cannot
+  // be mapped directly. Pair each match with the next occurrence of its own
+  // text in the rendered cell instead; a match whose text spans markers
+  // (for example "a** b") is not found verbatim and is skipped.
+  const plain = tableCellPlainText(cell);
+  const byText = new Map<string, CodeMirrorSearchMatchInRange[]>();
+  for (const match of matches) {
+    const text = doc.sliceString(match.from, match.to);
+    if (!text) continue;
+    const group = byText.get(text);
+    if (group) group.push(match);
+    else byText.set(text, [match]);
+  }
+  const ranges: { active: boolean; end: number; start: number }[] = [];
+  for (const [text, group] of byText) {
+    let searchFrom = 0;
+    for (const match of group) {
+      const index = plain.indexOf(text, searchFrom);
+      if (index < 0) break;
+      ranges.push({ active: match.active, end: index + text.length, start: index });
+      searchFrom = index + text.length;
+    }
+  }
+  ranges.sort((a, b) => b.start - a.start);
+  for (const range of ranges) {
+    wrapTableCellTextRange(
+      cell,
+      range.start,
+      range.end,
+      range.active
+        ? "cm-markra-search-match cm-markra-search-match-current"
+        : "cm-markra-search-match",
+    );
+  }
+}
+
+function applyTableSearchHighlights(
+  view: CodeMirrorView,
+  table: HTMLTableElement,
+  preview: TablePreview,
+  matches: readonly CodeMirrorSearchMatchInRange[],
+) {
+  if (!matches.length) return;
+  for (const cell of table.querySelectorAll<HTMLTableCellElement>("th, td")) {
+    const row = Number(cell.dataset.tableRow);
+    const column = Number(cell.dataset.tableColumn);
+    const header = cell.dataset.tableHeader === "true";
+    const cellPreview = header
+      ? preview.header[column]
+      : preview.rows[row]?.[column];
+    if (!cellPreview) continue;
+    const cellMatches = matches.filter(
+      (match) => match.from >= cellPreview.from && match.to <= cellPreview.to,
+    );
+    if (cellMatches.length) {
+      highlightTableCellSearchMatches(cell, cellMatches, view.state.doc);
+    }
+  }
+}
+
 class TableWidget extends WidgetType {
   private readonly contentKey: string;
   private readonly labelsKey: string;
+  private readonly searchKey: string;
   private runtime: TableWidgetRuntime;
 
   constructor(
@@ -1198,10 +1323,14 @@ class TableWidget extends WidgetType {
     readonly getDocumentKey: () => string | null | undefined,
     readonly images: ImagePreviewPluginOptions | undefined,
     readonly links: LinksPluginOptions | undefined,
+    readonly searchMatches: readonly CodeMirrorSearchMatchInRange[] = [],
   ) {
     super();
     this.contentKey = tablePreviewContentKey(preview);
     this.labelsKey = JSON.stringify(labels);
+    // Search highlights are painted into the widget DOM, so a changed
+    // search state must rebuild the widget instead of reusing its DOM.
+    this.searchKey = JSON.stringify(searchMatches);
     this.runtime = {
       controls: null,
       inlineSourceDocument: null,
@@ -1221,7 +1350,8 @@ class TableWidget extends WidgetType {
       this.getDocumentKey === other.getDocumentKey &&
       this.images === other.images &&
       this.links === other.links &&
-      this.labelsKey === other.labelsKey
+      this.labelsKey === other.labelsKey &&
+      this.searchKey === other.searchKey
     );
   }
 
@@ -1535,6 +1665,7 @@ class TableWidget extends WidgetType {
     }
 
     table.append(head, body);
+    applyTableSearchHighlights(view, table, this.preview, this.searchMatches);
     tableScroll.append(table);
     wrapper.append(tableScroll);
     this.runtime.controls = createTableControls(wrapper, table, {
@@ -1738,6 +1869,11 @@ export function tablePreviewPlugin(
                 getDocumentKey,
                 options.images,
                 options.links,
+                codeMirrorSearchMatchesInRange(
+                  context.state,
+                  context.node.from,
+                  context.node.to,
+                ),
               ),
             }).range(firstLine.from, firstLine.to),
           );

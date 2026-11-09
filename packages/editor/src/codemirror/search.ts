@@ -28,7 +28,7 @@ const emptySearchState: CodeMirrorSearchState = {
   decorations: Decoration.none,
   matches: [],
 };
-const setSearchEffect = StateEffect.define<SearchUpdate>();
+export const setCodeMirrorSearchEffect = StateEffect.define<SearchUpdate>();
 
 function validMatches(
   matches: readonly SearchRange[],
@@ -83,7 +83,7 @@ const searchField = StateField.define<CodeMirrorSearchState>({
   },
   update(value, transaction) {
     for (const effect of transaction.effects) {
-      if (effect.is(setSearchEffect)) {
+      if (effect.is(setCodeMirrorSearchEffect)) {
         return createSearchState(effect.value, transaction.newDoc.length);
       }
     }
@@ -112,12 +112,33 @@ export function getCodeMirrorSearchState(
   return state.field(searchField, false) ?? emptySearchState;
 }
 
+export interface CodeMirrorSearchMatchInRange {
+  readonly active: boolean;
+  readonly from: number;
+  readonly to: number;
+}
+
+export function codeMirrorSearchMatchesInRange(
+  state: EditorState,
+  from: number,
+  to: number,
+): readonly CodeMirrorSearchMatchInRange[] {
+  const { activeIndex, matches } = getCodeMirrorSearchState(state);
+  const result: CodeMirrorSearchMatchInRange[] = [];
+  matches.forEach((match, index) => {
+    if (match.from >= from && match.to <= to) {
+      result.push({ active: index === activeIndex, from: match.from, to: match.to });
+    }
+  });
+  return result;
+}
+
 export function updateCodeMirrorSearchDecorations(
   view: EditorView,
   matches: readonly SearchRange[],
   activeIndex: number,
 ) {
-  view.dispatch({ effects: setSearchEffect.of({ activeIndex, matches }) });
+  view.dispatch({ effects: setCodeMirrorSearchEffect.of({ activeIndex, matches }) });
 }
 
 function validScrollMatch(
