@@ -1,4 +1,5 @@
 import {
+  EditorSelection,
   StateEffect,
   StateField,
   type EditorState,
@@ -27,7 +28,7 @@ const emptySearchState: CodeMirrorSearchState = {
   decorations: Decoration.none,
   matches: [],
 };
-const setSearchEffect = StateEffect.define<SearchUpdate>();
+export const setCodeMirrorSearchEffect = StateEffect.define<SearchUpdate>();
 
 function validMatches(
   matches: readonly SearchRange[],
@@ -82,7 +83,7 @@ const searchField = StateField.define<CodeMirrorSearchState>({
   },
   update(value, transaction) {
     for (const effect of transaction.effects) {
-      if (effect.is(setSearchEffect)) {
+      if (effect.is(setCodeMirrorSearchEffect)) {
         return createSearchState(effect.value, transaction.newDoc.length);
       }
     }
@@ -111,12 +112,33 @@ export function getCodeMirrorSearchState(
   return state.field(searchField, false) ?? emptySearchState;
 }
 
+export interface CodeMirrorSearchMatchInRange {
+  readonly active: boolean;
+  readonly from: number;
+  readonly to: number;
+}
+
+export function codeMirrorSearchMatchesInRange(
+  state: EditorState,
+  from: number,
+  to: number,
+): readonly CodeMirrorSearchMatchInRange[] {
+  const { activeIndex, matches } = getCodeMirrorSearchState(state);
+  const result: CodeMirrorSearchMatchInRange[] = [];
+  matches.forEach((match, index) => {
+    if (match.from >= from && match.to <= to) {
+      result.push({ active: index === activeIndex, from: match.from, to: match.to });
+    }
+  });
+  return result;
+}
+
 export function updateCodeMirrorSearchDecorations(
   view: EditorView,
   matches: readonly SearchRange[],
   activeIndex: number,
 ) {
-  view.dispatch({ effects: setSearchEffect.of({ activeIndex, matches }) });
+  view.dispatch({ effects: setCodeMirrorSearchEffect.of({ activeIndex, matches }) });
 }
 
 function validScrollMatch(
@@ -139,8 +161,46 @@ export function scrollCodeMirrorSearchMatchIntoView(
 ) {
   if (!validScrollMatch(match, view.state.doc.length)) return false;
 
+  // The visual surface scrolls through an outer container while the editor's
+  // own scroller is overflow-visible, so CodeMirror cannot move the page on
+  // its own: its reveal handling only reaches lines that are already
+  // rendered, which is why jumping works in short documents but not long
+  // ones. Set the selection like the source editor does, then scroll the
+  // outer container directly from the height map, which knows every line
+  // position rendered or not.
   view.dispatch({
     effects: EditorView.scrollIntoView(match.from, { y: "center" }),
+    selection: EditorSelection.range(match.from, match.to),
   });
+  scrollVisualSurfaceToMatch(view, match);
   return true;
+}
+
+function scrollVisualSurfaceToMatch(view: EditorView, match: SearchRange) {
+  const scrollContainer = view.dom.closest<HTMLElement>(".paper-scroll");
+  if (!scrollContainer) return;
+
+  const lineBlock = view.lineBlockAt(match.from);
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const contentTop =
+    view.contentDOM.getBoundingClientRect().top -
+    containerRect.top +
+    scrollContainer.scrollTop;
+  const targetTop =
+    contentTop +
+    lineBlock.top +
+    lineBlock.height / 2 -
+    scrollContainer.clientHeight / 2;
+  scrollContainer.scrollTop = Math.max(0, targetTop);
+
+  // Height-map positions are estimates around unmeasured block widgets.
+  // Once the scrolled-to region is rendered, snap to the actual match mark,
+  // the same belt-and-braces step the AI preview scroll takes.
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => {
+      view.dom
+        .querySelector<HTMLElement>(".cm-markra-search-match-current")
+        ?.scrollIntoView?.({ block: "center", inline: "nearest" });
+    });
+  }
 }

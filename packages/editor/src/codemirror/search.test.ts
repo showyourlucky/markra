@@ -87,4 +87,52 @@ describe("CodeMirror search decorations", () => {
       false,
     );
   });
+
+  it("scrolls the outer paper container from the height map", () => {
+    const container = document.createElement("div");
+    container.className = "paper-scroll";
+    document.body.append(container);
+    const parent = document.createElement("div");
+    container.append(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: "Alpha beta Alpha",
+        extensions: [codeMirrorSearchPlugin()],
+      }),
+    });
+    views.push(view);
+
+    Object.defineProperty(container, "clientHeight", { value: 100 });
+    container.getBoundingClientRect = () => new DOMRect(0, 0, 0, 100);
+    view.contentDOM.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0);
+    const lineBlockAt = view.lineBlockAt.bind(view);
+    view.lineBlockAt = (pos: number) => ({
+      ...lineBlockAt(pos),
+      bottom: 520,
+      height: 20,
+      top: 500,
+    });
+
+    expect(scrollCodeMirrorSearchMatchIntoView(view, { from: 11, to: 16 })).toBe(
+      true,
+    );
+    expect(container.scrollTop).toBe(460);
+  });
+
+  it("moves the selection to the revealed match", () => {
+    const view = createView();
+
+    expect(scrollCodeMirrorSearchMatchIntoView(view, { from: 11, to: 16 })).toBe(
+      true,
+    );
+    expect(view.state.selection.main.from).toBe(11);
+    expect(view.state.selection.main.to).toBe(16);
+
+    expect(scrollCodeMirrorSearchMatchIntoView(view, { from: 20, to: 30 })).toBe(
+      false,
+    );
+    expect(view.state.selection.main.from).toBe(11);
+    expect(view.state.selection.main.to).toBe(16);
+  });
 });

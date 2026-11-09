@@ -29,6 +29,7 @@ import {
   resolveSafeLinkTarget,
   type MarkraLinkSourceContext,
 } from "./links.ts";
+import { setCodeMirrorSearchEffect } from "./search.ts";
 import { unescapeMarkdown } from "./syntax.ts";
 import { createTaskDecoration } from "./tasks.ts";
 import { isInsidePreformattedBlock } from "./blank-lines.ts";
@@ -952,10 +953,20 @@ function previewPlugin(config: LivePreviewConfig): Extension {
           update.transactions.length > 0 &&
           syntaxTreeChanged(update.startState, update.state);
 
+        // Widget renderers consult the search state (the table widget
+        // paints match highlights into its own DOM), so search updates
+        // must rebuild even when nothing else about the view changed.
+        const searchChanged = update.transactions.some((transaction) =>
+          transaction.effects.some((effect) =>
+            effect.is(setCodeMirrorSearchEffect),
+          ),
+        );
+
         if (
           compositionEnded ||
           update.docChanged ||
           selectionChangeAffectsReveal(update) ||
+          searchChanged ||
           update.focusChanged ||
           update.viewportChanged ||
           reconfigured ||
